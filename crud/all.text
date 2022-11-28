@@ -1,0 +1,817 @@
+====================== app.py =====================
+from turtle import title
+from flask import (Flask, render_template, make_response, url_for, request,
+                   redirect, flash, session, send_from_directory, jsonify)
+from werkzeug.utils import secure_filename
+app = Flask(__name__)
+
+# one or the other of these. Defaults to MySQL (PyMySQL)
+# change comment characters to switch to SQLite
+
+import cs304dbi as dbi
+# import cs304dbi_sqlite3 as dbi
+
+import helpers 
+import random
+
+my_id= int(8664)
+
+app.secret_key = 'your secret here'
+# replace that with a random key
+app.secret_key = ''.join([ random.choice(('ABCDEFGHIJKLMNOPQRSTUVXYZ' +
+                                          'abcdefghijklmnopqrstuvxyz' +
+                                          '0123456789'))
+                           for i in range(20) ])
+
+# This gets us better error messages for certain common request errors
+app.config['TRAP_BAD_REQUEST_ERRORS'] = True
+
+@app.route('/')
+def index():
+    return render_template('main.html', page_title= "Hello")
+
+@app.route('/insert/', methods=['GET','POST'])
+def insert():
+    if request.method == 'GET':
+        return render_template('insert.html', page_title = 'Insert')
+    else:
+        tt = request.form.get('movie-tt')
+        title = request.form.get('movie-title')
+        release = request.form.get('movie-release')
+        if not tt or not title or not release:
+            flash('You are missing an input')
+        else:
+            try:
+                int(tt)
+            except:
+                flash('The tt you have entered must be an integer')
+                return redirect(url_for('insert'))        
+            if len(release) > 4:
+                flash('The correct date format is: yyyy')
+                return redirect(url_for('insert'))
+            conn = dbi.connect()
+            if len(release) < 4:
+                flash('The correct date format is: yyyy')
+                return redirect(url_for('insert'))
+            conn = dbi.connect()
+            if len(helpers.check_tt(conn, tt)) == 0:
+                flash('The tt you have entered does not already exist')
+                helpers.insert_movie(conn, tt, title, release, my_id)
+                session['title'] = title
+                session['release'] = release
+                return redirect(url_for('update', tt = tt))
+            else: flash('The tt you entered already exists')
+    return redirect(url_for('insert'))
+
+@app.route('/update/<int:tt>', methods=['GET','POST'])
+def update(tt):
+    if request.method == 'GET':
+        title = session.get('title')
+        release = session.get('release')
+        if session.get('director'):
+            director = session.get('director')
+        else:
+            director = None
+        if session.get('addedby'):
+            addedby = session.get('addedby')
+        else:
+            addedby = my_id
+        return render_template('update.html', page_title = 'Update', tt = tt, title = title, release = release, director = director, addedby = addedby)
+    else:
+        new_tt = request.form.get('movie-tt')
+        conn = dbi.connect()
+        if request.form.get('submit') == 'update':
+            title = request.form.get('movie-title')
+            release = request.form.get('movie-release')
+            director = request.form.get('movie-director')
+            addedby = request.form.get('movie-addedby')
+            if int(new_tt) != int(tt) and len(helpers.check_tt(conn, new_tt)) != 0:
+                flash('Movie already exists')
+                return render_template('update.html', page_title = 'Update', tt = tt)
+            else:
+                helpers.update_movie(conn, tt, new_tt, title, release, director, addedby)
+                flash('The movie has been updated successfully')
+                return render_template('update.html', tt = new_tt, title = title, release = release, director = director, addedby = addedby)
+        elif request.form.get('submit') == 'delete':
+            helpers.delete_movie(conn, new_tt)
+            flash('The movie has been deleted successfully')
+            return redirect(url_for('index')) 
+
+@app.route('/select/', methods=['GET','POST'])
+def select():
+    if request.method == 'GET':
+        conn = dbi.connect()
+        movies = helpers.select_movie(conn)
+        return render_template('select.html', page_title = 'Incomplete', movies = movies)
+    else:
+        tt = int(request.form.get('menu-tt'))
+        conn = dbi.connect()
+        info = helpers.check_tt(conn, tt)[0]
+        session['title'] = info['title']
+        session['release'] = info['release']
+        session['director'] = info['director']
+        session['addedby'] = info['addedby']
+        return redirect(url_for('update', tt = tt)) 
+
+
+@app.before_first_request
+def init_db():
+    dbi.cache_cnf()
+    # set this local variable to 'wmdb' or your personal or team db
+    db_to_use = 'zy1_db' 
+    dbi.use(db_to_use)
+    print('will connect to {}'.format(db_to_use))
+
+
+if __name__ == '__main__':
+    import sys, os
+    if len(sys.argv) > 1:
+        # arg, if any, is the desired port number
+        port = int(sys.argv[1])
+        assert(port>1024)
+    else:
+        port = os.getuid()
+    app.debug = True
+    app.run('0.0.0.0',port)
+====================== cs304dbi.py =====================
+'''Module to read MySQL database credentials and access databases as the
+MySQL user.
+
+This module is designed to work with the pymysql package and make it
+easier to read the database credentials from the standard ~/.my.cnf file,
+or any file of similar format.  Doing so avoids putting those credentials
+in the source code and removes that dependency from the code.
+
+EXAMPLE USAGE
+
+import cs304dbi as dbi
+
+dbi.conf(db='some_db')
+conn = dbi.connect()
+curs = dbi.cursor(conn)                    # or dbi.dictCursor(conn) 
+                                           # or dbi.dict_cursor(conn)
+
+curs.execute('select * from table where id = %s',[some_id])
+vals = curs.fetchall()
+curs.execute('insert into table values(%s,%s)',[col1,col2])
+conn.commit()                              # necessary after insert/update/delete
+
+USAGE DETAIL
+
+import cs304dbi as dbi
+
+Use one of the following to read the credentials (DSN) file
+
+dsn = dbi.read_cnf(db=some_db)
+dsn = dbi.read_cnf('~/.my.cnf',db=some_db)
+dsn = dbi.read_cnf('/path/to/any/dsn_file',db=some_db)
+
+Or use dbi.cache_cnf() in the same way.
+
+Your credentials file typically specify a database to connect to in
+the [mysql] section. You can optionally assign or modify that value in
+either of these functions (which will apply to subsequent connections)
+or use the select_db() method on the connection, like this:
+
+dsn['database'] = 'wmdb'     # the database we want to connect to every time
+
+or
+
+conn = dbi.connect(dsn)
+conn.select_db('wmdb')       # switch to this database for this connection
+
+Use the DSN (credentials dictionary) to connect to the database. From here
+on, mostly use the PyMySQL API.
+
+conn = dbi.connect(dsn)
+conn.select_db('wmdb')
+curs = db.dict_cursor(conn)
+curs.execute('select name,birthdate from person')
+curs.execute('select name,birthdate from person where name like %s',
+             ['%george%'])
+curs.fetchall()
+curs.fetchone()
+
+curs.execute('insert into person values(%s,%s)',[123,'George Clooney'])
+conn.commit()
+
+PROVISOS and CONFIGURATION
+
+The database connection is set to auto_commit(), but you can modify that
+by using the conn.autocommit() method on the database connection:
+
+conn=connect()
+conn.autocommit(False)
+
+INSTALLATION
+
+It's usually easiest to install this module into your virtual
+environment. Here's how to do that: 
+
+(1) activate your virtual environment, and 
+(2) execute the following Unix command:
+
+cp ~cs304/pub/downloads/pymysql/cs304dbi.py $VIRTUAL_ENV/lib/python3.6/site-packages/
+
+REPL
+
+If you load this file using the Python REPL, you can get a read-eval-print
+loop to the database with the repl() function:
+
+repl(conn)
+dbi> select user()
+1
+('cs304guest@localhost')
+dbi> select database()
+1
+('wmdb')
+dbi> select * from person limit 10;
+10
+(0, 'Alan Smithee', None, 1)
+(1, 'Fred Astaire', datetime.date(1899, 5, 10), 167)
+(2, 'Lauren Bacall', datetime.date(1924, 9, 16), 1207)
+(3, 'Brigitte Bardot', datetime.date(1934, 9, 28), 1)
+(4, 'John Belushi', datetime.date(1949, 3, 5), None)
+(5, 'Ingmar Bergman', datetime.date(1918, 7, 14), 1)
+(6, 'Ingrid Bergman', datetime.date(1915, 8, 29), 1)
+(7, 'Humphrey Bogart', datetime.date(1899, 12, 25), 1247)
+(8, 'Marlon Brando', datetime.date(1924, 4, 3), 1)
+(9, 'Richard Burton', datetime.date(1925, 11, 10), 64)
+dbi> quit
+>>>
+
+'''
+
+import pymysql
+import configparser
+import os
+
+DEBUG = False
+
+# got this code from pymsql/optionfile.py
+
+class Parser(configparser.RawConfigParser):
+
+    def __remove_quotes(self, value):
+        quotes = ["'", "\""]
+        for quote in quotes:
+            if len(value) >= 2 and value[0] == value[-1] == quote:
+                return value[1:-1]
+        return value
+
+    def get(self, section, option):
+        value = configparser.RawConfigParser.get(self, section, option)
+        return self.__remove_quotes(value)
+
+def read_cnf(cnf_file='~/.my.cnf',db=None):
+    '''Read a file formatted like ~/.my.cnf file; defaulting to that
+    file. Return a dictionary with the necessary information to connect to
+    a database. See the connect() function. If 'db' given, replace the 
+    value from the cnf_file. '''
+    abs_cnf_file = os.path.expanduser(cnf_file)
+    if not os.path.exists(abs_cnf_file):
+        raise FileNotFoundError(cnf_file)
+
+    # this code is from pymysql/connections.py
+    read_default_group = "client"
+    cfg = Parser()
+    cfg.read(abs_cnf_file)
+
+    def _config(key):
+        return cfg.get(read_default_group, key)
+
+    user = _config("user")
+    password = _config("password")
+    host = _config("host")
+    # on Tempest, we put the database in the mysql group
+    database = cfg.get("mysql","database")
+    if db is not None:
+        database = db
+    if DEBUG:
+        print('read_cnf: {} {}'.format(user,database))
+    return {'user': user,
+            'password': password,
+            'host': host,
+            'database': database}
+
+DSN_CACHE = None
+
+def cache_cnf(cnf_file='~/.my.cnf',db=None):
+    '''Like read_cnf but reads the CNF file only once and caches the
+results. You can override the default database with the second
+argument.'''
+    global DSN_CACHE
+    if DSN_CACHE is None:
+        DSN_CACHE = read_cnf(cnf_file,db=db)
+    return DSN_CACHE
+
+def conf(db=None):
+    '''In practice, we rarely choose a different cnf file, but we often
+    choose a different database, so I should have switched the
+    arguments above.  Instead of redefining that, I'll define this
+    new, better function. It also doesn't return the CNF data, since
+    we rarely need it, and we can always get it from cache_cnf if we
+    want it.
+
+    '''
+    cache_cnf(db=db)
+
+# ================================================================
+
+def use(database):
+
+    '''Like the 'use' statement, but modifies the cached cnf. Then connect()'''
+    if DSN_CACHE is None:
+        raise Exception('You have to invoke cache_cnf first')
+    DSN_CACHE['database'] = database
+
+def connect(dsn=None):
+    '''Returns a new database connection given the dsn (a dictionary). The
+default is to use cache_cnf('~/.my.cnf')
+
+    The database connection is not set to automatically commit.
+
+    '''
+    if dsn is None:
+        dsn = cache_cnf('~/.my.cnf')
+    check_DSN(dsn)
+    try:
+        # have no idea why this unix_socket thing is necessary, but
+        # only for deployed apps, not in development mode
+        # see stackoverflow.com/questions/6885164/pymysql-cant-connect-to-mysql-on-localhost
+        conn = pymysql.connect( use_unicode=True,
+                                autocommit=False,
+                                charset='utf8',
+                                unix_socket='/var/lib/mysql/mysql.sock',
+                                **dsn )
+    except pymysql.Error as e:
+        print("Couldn't connect to database. PyMySQL error {}: {}"
+              .format(e.args[0], e.args[1]))
+        raise
+    return conn
+
+def check_DSN(dsn):
+    '''Raises a comprehensible error message if the DSN is missing
+    some necessary info'''
+    for key in ('host', 'user', 'password', 'database' ):
+        if not key in dsn:
+            raise KeyError('''DSN lacks necessary '{k}' key'''.format(k=key))
+    return True
+
+def cache_select_db(db_name):
+    '''Stores given db_name in DSN, so that subsequent connections use it.'''
+    DSN_CACHE['database'] = db_name
+    return DSN_CACHE
+
+def select_db(conn,db):
+    '''This function isn't necessary; just use the select_db() method
+on the connection.'''
+    conn.select_db(db)
+
+def cursor(conn):
+    '''Returns a cursor where rows are represented as tuples.'''
+    return conn.cursor()
+
+# for those who prefer snake_case
+
+def dict_cursor(conn):
+    '''Returns a cursor where rows are represented as dictionaries.'''
+    return conn.cursor(pymysql.cursors.DictCursor)
+
+# for those who prefer camelCase
+
+def dictCursor(conn):
+    '''Returns a cursor where rows are represented as dictionaries.'''
+    return conn.cursor(pymysql.cursors.DictCursor)
+
+## ================================================================
+## testing and help functions
+
+def usage():
+    '''Prints a usage message.'''
+    print('''How to use the cs304dbi python module:
+
+''')
+
+def repl(conn):
+    '''Read SQL statements, Execute them, and print the results. Use 'quit' to quit.'''
+    curs = cursor(conn)
+    while True:
+        expr = input('dbi> ')
+        if expr == 'quit':
+            break
+        val = curs.execute(expr)
+        print(val)
+        for row in curs.fetchall():
+            print(row)
+
+def _testing_changed_cache(cnf_file):
+    '''Testing that changing the db in the cache changes future connections'''
+    # checking modification of DSN. But students can't switch to scottdb, so
+    # this is just for scott
+    scottdsn = cache_cnf(cnf_file)
+    # we will use scottdb from now on
+    scottdsn['database'] = 'scottdb'
+    conn2 = connect()           # don't even have to supply it as an argment
+    curs2 = cursor(conn2)
+    curs2.execute('select database()')
+    db = curs2.fetchone()[0]
+    if db == 'scottdb':
+        print('Successfully changed the database to scottdb')
+    #else:
+        #raise Error('did not successfully change database')
+    return conn2
+
+def _testing_commit(cnf_file):
+    '''For Scott to test the behavior of commit()'''
+    def drevil(should_be_there):
+        conn = connect()
+        curs = conn.cursor()
+        curs.execute('select database()')
+        db = curs.fetchone()[0]
+        if db != 'scottdb':
+            raise Exception('did not connect to scottdb')
+        curs.execute('select name from person where nm = 666')
+        row = curs.fetchone()
+        name = None if row is None else row[0]
+        if should_be_there and name is None:
+            raise Exception('name is not there and it should be there')
+        else:
+            print('name is correctly there')
+        if not should_be_there and name is not None:
+            raise Exception('name is there and it should not be there')
+        else:
+            print('name is correctly not there')
+
+    # series of checks about behavior of commit
+    conn2 = _testing_changed_cache(cnf_file)
+    curs2 = conn2.cursor()
+    # set up by removing dr evil
+    curs2.execute('delete from person where nm = 666')
+    conn2.commit()
+    # it should not be there
+    drevil(False)
+
+    # since autocommit is false, this won't stick
+    curs2.execute('''insert into person(nm,name) values(666, 'dr evil')
+                     on duplicate key update name='dr evil' ''')
+    drevil(False)
+
+    # now, commit the insert/update in connection 2
+    conn2.commit()
+    drevil(True)
+
+    # clean up by removing dr evil
+    curs2.execute('delete from person where nm = 666')
+    conn2.commit()
+    # last check, to make sure it's gone
+    drevil(False)
+
+
+if __name__ == '__main__':
+    print('starting test code')
+    import sys
+    import os
+    if len(sys.argv) < 2:
+        print('''Usage: {cmd} cnf_file
+test this module by giving the name of a cnf_file on the command line'''
+              .format(cmd=sys.argv[0]))
+        sys.exit(1)
+    cnf_file = sys.argv[1]
+    DSN = cache_cnf(cnf_file)
+    print('Your DSN / CNF file should connect you as user {}@{} to database {}'
+          .format(DSN['user'],DSN['host'],DSN['database']))
+    conn = connect(DSN)
+    print('successfully connected')
+    DSN = cache_cnf(cnf_file,db='wmdb')
+    print('Override DB to be wmdb')
+    conn = connect(DSN)
+    print('successfully connected')
+    print('switching to wmdb')
+    conn.select_db('wmdb')
+    curs = cursor(conn)
+    curs.execute('select user() as user, database() as db')
+    row = curs.fetchone()
+    print('connected to {db} as {user}'
+          .format(db=row[1],user=row[0]))
+    curs = dict_cursor(conn)
+    # example of a simple query
+    curs.execute('select nm,name,birthdate from person limit 3')
+    print('first three people')
+    for row in curs.fetchall():
+        print(row)
+    # example of a prepared query
+    curs.execute('select nm,name,birthdate from person where name like %s',
+                 ['%george%'])
+    print('names like george')
+    for row in curs.fetchall():
+        print(row)
+
+    # the following is just for scott (1942 is the cs304 course account)
+    if os.getuid() == 1942:
+        print('testing code for Scott/ CS304 course account')
+        _testing_commit(cnf_file)
+
+====================== helpers.py =====================
+import cs304dbi as dbi
+
+# ==========================================================
+# The functions that do most of the work.
+
+
+def check_tt(conn, tt):
+    curs = dbi.dict_cursor(conn)
+    curs.execute('''
+        select title, `release`, director, addedby
+        from movie
+        where tt = %s''', (tt))
+    return curs.fetchall()
+
+def insert_movie(conn, tt, title, release, addedby):
+    curs = dbi.dict_cursor(conn)
+    curs.execute('''
+        insert into movie
+        values (%s, %s, %s, %s, %s)''', (tt, title, release, None, addedby))
+    conn.commit()
+    return
+
+def update_movie(conn, tt, newtt, title, release, director, addedby):
+    curs = dbi.dict_cursor(conn)
+    curs.execute('''
+        update movie set tt = %s, title = %s, `release` = %s, director = %s, addedby = %s
+        where tt = %s''', (newtt, title, release, director, addedby, tt))
+    conn.commit()
+    return
+
+def delete_movie(conn, tt):
+    curs = dbi.dict_cursor(conn)
+    curs.execute('''
+        delete from movie where tt = %s''', (tt))
+    conn.commit()
+    return
+
+def select_movie(conn):
+    curs = dbi.dict_cursor(conn)
+    curs.execute('''
+        select tt, title
+        from movie
+        where director is null or `release` is null''')
+    return curs.fetchall()
+
+# ==========================================================
+# This starts the ball rolling, *if* the file is run as a
+# script, rather than just being imported.    
+
+if __name__ == '__main__':
+    dbi.cache_cnf()   # defaults to ~/.my.cnf
+    dbi.use('zy1_db')
+    conn = dbi.connect()
+====================== *.sql =====================
+
+====================== templates/base.html =====================
+<!-- Zeynep and Diana -->
+
+
+<!doctype html>
+<html lang='en'>
+<head>
+    <meta charset='utf-8'>
+    <!-- for mobile-friendly pages -->
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="Zeynep and Diana" content="">
+    <title>{{ page_title }}</title>
+    <link rel='stylesheet' href="{{url_for('static', filename = 'style.css')}}">
+    
+    {% block head_stuff %}
+    <style>
+      body{
+        background-color: #6495ED;
+      }
+      nav {
+        display: flex;
+        flex-wrap: wrap;
+      }
+      nav a {
+        text-decoration: none;
+        display: block;
+        text-align: center;
+        background-color: rgb(189, 185, 185);
+        color: #464141;
+        margin: 0;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      }
+      nav a:hover {
+        background-color: #777777;
+        color: #ffffff;
+      }
+      
+    </style>
+    {% endblock %}
+  
+  </head>
+
+<body>
+{% with messages = get_flashed_messages() %}
+{% if messages %}
+<div id="messages" class="container">
+  {% for msg in messages %}
+  <p>{{msg}}</p>
+  {% endfor %}
+</div>
+{% endif %}
+{% endwith %}
+
+{% block nav %}
+<nav>
+  <ul>
+    <li><a href="/">Home</a></li>
+    <li><a href="/insert/">Insert Movie</a></li>
+    <li><a href="/select/">Select Incomplete</a></li>
+  </ul>
+</nav>
+{% endblock %}
+            
+
+{% block main_content %}
+<h1>Welcome!</h1>
+{% endblock %}
+
+  <script src="https://code.jquery.com/jquery-3.4.1.min.js"></script>
+  {% block end_scripts %}
+  {% endblock %}
+  
+</body>
+</html>
+
+====================== templates/insert.html =====================
+{% extends "base.html" %}
+
+{% block main_content %}
+
+<style>
+    body{
+      background-color: #c1ffc1;
+    }
+    label { 
+        font-family: 'Gill Sans', 'Gill Sans MT', Calibri, 'Trebuchet MS', sans-serif;  
+        font-size: 20px
+    }
+
+  </style>
+
+<h1>Insert Movie</h1>
+
+<form method=post action="">
+
+    <fieldset>
+    <legend>Movie Data</legend>
+    <table>
+    <tr><td><label for="movie-tt" accesskey="i">(i) Movie ID/TT:</label></td>
+        <td><input id="movie-tt" type="text" name="movie-tt"></td></tr>
+    <tr><td><label for="movie-title" accesskey="t">(t) Movie Title:</label></td>
+        <td><input id="movie-title" type="text" name="movie-title"></td></tr>
+    <tr><td><label for="movie-release" accesskey="r">(r) Movie Release Year:</label></td>
+        <td><input id="movie-release" type="text" name="movie-release"></td></tr>
+    </table>
+    </fieldset>
+
+    <p> <input type='submit' value='Insert Movie'> </p>
+
+</form>
+
+
+
+    </div>
+
+      
+{% endblock %}
+
+====================== templates/main.html =====================
+<!-- Zeynep and Diana -->
+
+
+{% extends "base.html" %}
+
+{% block main_content %}
+<body>
+    <!-- database is  -->
+  <div id="navigation">
+    
+  </div>
+  <div id="content">
+
+      <div id="flashes">
+      </div>
+      <h1>WMDB Interactions</h1>
+  </div>
+  <script src="//code.jquery.com/jquery-3.2.1.min.js"></script>
+  
+</body>
+
+{% endblock %}
+
+====================== templates/select.html =====================
+<!-- Zeynep and Diana -->
+
+
+{% extends "base.html" %}
+
+{% block main_content %}
+
+<style>
+  body{
+        background-color: #EC9BB0;
+      }
+      h1{
+          color:rgb(70, 70, 70);
+      }
+  </style>
+  
+
+    <h1>Select Movie</h1>
+
+    <form method="POST" action="{{url_for('select', movies = movies)}}">
+        <p><label for="menu-tt">Movies without release dates or directors:</label>
+        <select id="menu-tt" name="menu-tt">
+        <option value="none">choose one</option> 
+        {% for movie in movies %}
+          <option value="{{movie['tt']}}">{{movie['title']}}</option>
+        {% endfor %}
+        </select></p><input type="submit" value="choose">
+    </form>
+    
+
+{% endblock %}
+====================== templates/update.html =====================
+<!-- Zeynep and Diana -->
+{% extends "base.html" %}
+
+{% block main_content %}
+
+<style>
+  h1{
+    color:rgb(227, 231, 239);
+  }
+  </style>
+
+
+<h1>Update Movie</h1>
+
+  <p>Use "None" or "null" to set a field to null. Only Title, Release Year and Director can be null.
+
+<form method="POST" action="{{url_for('update', tt = tt, title = title, release = release, director = director, addedby = addedby)}}">
+    <p><label>tt:
+        <input type = "movie-tt" value = {{tt}} name = "movie-tt">
+        </label>
+        <label>title:
+        <input type = "movie-title" value = "{{title}}" name = "movie-title">
+        </label>
+        <label>release:
+        <input type = "movie-release" value = {{release}} name = "movie-release">
+        </label>
+        <label>director:
+        <input type = "movie-director" value = {{director}} name = "movie-director">
+        </label>  
+        <label>addedby:
+        <input type = "movie-addedby" value = {{addedby}} name = "movie-addedby">
+        </label><p><input type="submit" name="submit" value="update">
+          <input type="submit" name="submit" value="delete">
+    </form>
+
+   
+{% endblock %}
+====================== static/*.js =====================
+
+====================== static/style.css =====================
+/* the --color-header and others are CSS variables, which we access later. 
+*/
+
+HTML {
+    --color-header: #007ea9;  /* color for H1-H6 and others. was deepskyblue but poor contrast. */
+    --color-hilite: #b50000;  /* was red, but this avoids WAVE contrast errors */ 
+    --color-focus: #56B929;
+    --font-family: Verdana;
+    font-family: var(--font-family)
+}
+
+/* For flashed messages; make them stand out using red and italics */
+
+#messages {
+    color: var(--color-hilite);
+    font-style: italic;
+}
+
+
+h1 {
+    font-size: 200%;
+    color: var(--color-header);
+}
+
+h2, h3 {
+    color: var(--color-header);
+}
+    
+
+
+
+

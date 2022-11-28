@@ -1,0 +1,31 @@
+<!-- Zeynep and Diana -->
+
+
+{% extends "base.html" %}
+
+{% block main_content %}
+
+<style>
+  body{
+        background-color: #EC9BB0;
+      }
+      h1{
+          color:rgb(70, 70, 70);
+      }
+  </style>
+  
+
+    <h1>Select Movie</h1>
+
+    <form method="POST" action="{{url_for('select')}}">
+        <p><label for="menu-tt">Movies without release dates or directors:</label>
+        <select id="menu-tt" name="menu-tt">
+        <option value="none">choose one</option> 
+        {% for movie in movies %}
+          <option value="{{movie['tt']}}">{{movie['title']}}</option>
+        {% endfor %}
+        </select></p><input type="submit" value="choose">
+    </form>
+    
+
+{% endblock %}

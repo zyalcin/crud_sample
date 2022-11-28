@@ -1,0 +1,37 @@
+<!-- Zeynep and Diana -->
+{% extends "base.html" %}
+
+{% block main_content %}
+
+<style>
+  h1{
+    color:rgb(227, 231, 239);
+  }
+  </style>
+
+
+<h1>Update Movie</h1>
+
+  <p>Use "None" or "null" to set a field to null. Only Title, Release Year and Director can be null.
+
+<form method="POST" action="{{url_for('update', tt = tt)}}">
+    <p><label>tt:
+        <input type = "movie-tt" value = {{tt}} name = "movie-tt">
+        </label>
+        <label>title:
+        <input type = "movie-title" value = "{{title}}" name = "movie-title">
+        </label>
+        <label>release:
+        <input type = "movie-release" value = {{release}} name = "movie-release">
+        </label>
+        <label>director:
+        <input type = "movie-director" value = {{director}} name = "movie-director">
+        </label>  
+        <label>addedby:
+        <input type = "movie-addedby" value = {{addedby}} name = "movie-addedby">
+        </label><p><input type="submit" name="submit" value="update">
+          <input type="submit" name="submit" value="delete">
+    </form>
+
+   
+{% endblock %}
